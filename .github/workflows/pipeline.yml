@@ -1,0 +1,90 @@
+name: infra
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "**.tf"
+      - "environments/**"
+      - "backend/**"
+  workflow_dispatch:
+    inputs:
+      action:
+        description: What to run
+        required: true
+        type: choice
+        default: plan
+        options: [plan, apply, destroy]
+
+permissions:
+  id-token: write # OIDC hacia AWS, sin llaves guardadas
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  AWS_ROLE_ARN: arn:aws:iam::770725602805:role/thoughtworks-test-infra-deployer
+  ENVIRONMENT: dev
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  ACTION: ${{ github.event_name == 'push' && 'apply' || inputs.action }}
+
+concurrency:
+  group: terraform-dev
+  cancel-in-progress: false
+
+jobs:
+  terraform:
+    name: ${{ github.event_name == 'push' && 'apply' || inputs.action }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Format
+        run: terraform fmt -check -recursive -diff
+
+      - name: Init
+        run: terraform init -backend-config="backend/${ENVIRONMENT}.backend.hcl"
+
+      - name: Validate
+        run: terraform validate
+
+      - name: Plan
+        run: |
+          if [ "$ACTION" = "destroy" ]; then
+            terraform plan -destroy -var-file="environments/${ENVIRONMENT}.tfvars" -out=tfplan
+          else
+            terraform plan -var-file="environments/${ENVIRONMENT}.tfvars" -out=tfplan
+          fi
+
+      - name: Summary
+        run: |
+          terraform show -json tfplan > plan.json
+          {
+            echo "### ${ACTION} on \`${ENVIRONMENT}\`"
+            echo "- To create: $(jq '[.resource_changes[]? | select(.change.actions | index("create"))] | length' plan.json)"
+            echo "- To update: $(jq '[.resource_changes[]? | select(.change.actions | index("update"))] | length' plan.json)"
+            echo "- To destroy: $(jq '[.resource_changes[]? | select(.change.actions | index("delete"))] | length' plan.json)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply
+        if: env.ACTION != 'plan'
+        run: terraform apply tfplan
+
+      - name: Outputs
+        if: env.ACTION == 'apply'
+        run: |
+          {
+            echo "### Outputs"
+            echo '```'
+            terraform output
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
