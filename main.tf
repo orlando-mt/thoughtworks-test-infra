@@ -70,7 +70,7 @@ module "database" {
 
   # 0 ACU: la base se pausa sola cuando nadie la usa
   instance_count             = 1
-  serverless_v2_min_capacity = 0
+  serverless_v2_min_capacity = 0.5
   serverless_v2_max_capacity = var.db_max_capacity
 
   vpc_id                 = module.vpc.vpc_id
